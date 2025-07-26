@@ -21,52 +21,61 @@
     document.getElementById("process-btn").addEventListener("click", async () => {
       const fileInput = document.getElementById("file-input");
       const file = fileInput.files[0];
-      if (!file) {
-        alert("请先选择 Excel 文件");
-        return;
-      }
+      if (!file) { alert("请先选择 Excel 文件"); return; }
       try {
         const data = await file.arrayBuffer();
-        const workbook = XLSX.read(data, { type: "array" });
+        const workbook = XLSX.read(data, { type: "array", cellDates: true });
         const sheet = workbook.Sheets["Copy of Pivot"];
-        if (!sheet) {
-          alert("未找到名为 'Copy of Pivot' 的工作表");
-          return;
-        }
-        const json = XLSX.utils.sheet_to_json(sheet, { header: 1 });
-        if (json.length === 0) {
-          alert("工作表为空");
-          return;
-        }
-        const headers = json[0];
-        const posIdx = headers.indexOf("Position ID");
-        const grandIdx = headers.indexOf("Grand Total");
+        if (!sheet) { alert("未找到名为 'Copy of Pivot' 的工作表"); return; }
 
-        // 收集所有有效日期列及其索引
-        const dateInfos = headers.map((h, i) => {
-          const d = new Date(h);
-          return { h, i, d };
-        }).filter(info =>
-          info.i !== posIdx &&
-          info.i !== grandIdx &&
-          !isNaN(info.d)
-        );
+        // 获取表格范围
+        const ref = sheet["!ref"];
+        const range = XLSX.utils.decode_range(ref);
+        let posCol = -1;
+        const dateInfos = [];
 
-        // 确保按日期排序
+        // 遍历表头行，定位 Position ID 列与所有非周日的日期列
+        for (let c = range.s.c; c <= range.e.c; c++) {
+          const cellRef = XLSX.utils.encode_cell({ r: range.s.r, c });
+          const cell = sheet[cellRef];
+          if (!cell) continue;
+          const h = cell.v;
+          if (h === 'Position ID') { posCol = c; continue; }
+          if (h === 'Grand Total') continue;
+
+          // 解析日期
+          let d = null;
+          if (cell.t === 'd' && cell.v instanceof Date) {
+            d = cell.v;
+          } else if (cell.t === 'n') {
+            const parsed = XLSX.SSF.parse_date_code(cell.v);
+            if (parsed && parsed.y) {
+              d = new Date(parsed.y, parsed.m - 1, parsed.d);
+            }
+          } else {
+            const tmp = new Date(h);
+            if (!isNaN(tmp)) d = tmp;
+          }
+          if (d instanceof Date && !isNaN(d.getTime()) && d.getDay() !== 0) {
+            dateInfos.push({ c, d });
+          }
+        }
+        if (posCol < 0) { alert("未找到 'Position ID' 列"); return; }
+        if (dateInfos.length === 0) { alert("未检测到有效的日期列"); return; }
+
+        // 按日期排序
         dateInfos.sort((a, b) => a.d - b.d);
 
         // 计算日期范围标签
         const pad = n => n.toString().padStart(2, '0');
-        const fmt = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-        const rangeLabel = `${fmt(dateInfos[0].d)} - ${fmt(dateInfos[dateInfos.length - 1].d)}`;
+        const fmt = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+        const rangeLabel = `${fmt(dateInfos[0].d)} - ${fmt(dateInfos[dateInfos.length-1].d)}`;
 
-        // 按周分组（周一到周六为一周，跳过周日）
+        // 按周（周一至周六）分组
         const weeks = [];
         let cur = [];
         dateInfos.forEach(info => {
-          const day = info.d.getDay();
-          if (day === 0) return;  // 跳过周日
-          if (day === 1 && cur.length) {
+          if (info.d.getDay() === 1 && cur.length) {
             weeks.push(cur);
             cur = [info];
           } else {
@@ -75,22 +84,25 @@
         });
         if (cur.length) weeks.push(cur);
 
-        // 统计每个员工的工作周数
+        // 统计每个员工的出勤周数
         const results = [];
-        json.slice(1).forEach(row => {
-          const emp = row[posIdx];
-          if (emp == null || emp === "Grand Total") return;
+        for (let r = range.s.r + 1; r <= range.e.r; r++) {
+          const idCell = sheet[XLSX.utils.encode_cell({ r, c: posCol })];
+          const emp = idCell ? idCell.v : null;
+          if (emp == null || emp === 'Grand Total') continue;
           let count = 0;
           weeks.forEach(week => {
-            // 只要本周任意一天有值（非空），就算有工作
-            if (week.some(info => row[info.i] != null && row[info.i] !== "")) {
+            if (week.some(info => {
+              const cell = sheet[XLSX.utils.encode_cell({ r, c: info.c })];
+              return cell && cell.v != null && cell.v !== '';
+            })) {
               count++;
             }
           });
           results.push([emp, count]);
-        });
+        }
 
-        // 构建并下载结果 Excel，第二列标题为日期范围
+        // 生成并下载结果 Excel
         const newWs = XLSX.utils.aoa_to_sheet([
           ['员工ID', rangeLabel],
           ...results
@@ -98,13 +110,11 @@
         const newWb = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(newWb, newWs, '员工周工作统计');
         const wbout = XLSX.write(newWb, { bookType: 'xlsx', type: 'array' });
-        saveAs(
-          new Blob([wbout], { type: 'application/octet-stream' }),
-          '员工周工作统计结果.xlsx'
-        );
+        saveAs(new Blob([wbout], { type: 'application/octet-stream' }), '员工周工作统计结果.xlsx');
+
       } catch (err) {
         console.error(err);
-        alert('处理时发生错误，请检查文件格式');
+        alert('处理时发生错误，请查看控制台');
       }
     });
   </script>
