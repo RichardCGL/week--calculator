@@ -39,21 +39,38 @@
           return;
         }
         const headers = json[0];
-        const dateCols = headers.filter(h => h !== 'Position ID' && h !== 'Grand Total');
-        const dates = dateCols
-          .map(h => new Date(h))
-          .filter(d => !isNaN(d));
+        const posIdx = headers.indexOf("Position ID");
+        const grandIdx = headers.indexOf("Grand Total");
+
+        // 收集所有有效日期列及其索引
+        const dateInfos = headers.map((h, i) => {
+          const d = new Date(h);
+          return { h, i, d };
+        }).filter(info =>
+          info.i !== posIdx &&
+          info.i !== grandIdx &&
+          !isNaN(info.d)
+        );
+
+        // 确保按日期排序
+        dateInfos.sort((a, b) => a.d - b.d);
+
+        // 计算日期范围标签
+        const pad = n => n.toString().padStart(2, '0');
+        const fmt = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+        const rangeLabel = `${fmt(dateInfos[0].d)} - ${fmt(dateInfos[dateInfos.length - 1].d)}`;
 
         // 按周分组（周一到周六为一周，跳过周日）
         const weeks = [];
         let cur = [];
-        dates.sort((a, b) => a - b).forEach(d => {
-          if (d.getDay() === 0) return;
-          if (d.getDay() === 1 && cur.length) {
+        dateInfos.forEach(info => {
+          const day = info.d.getDay();
+          if (day === 0) return;  // 跳过周日
+          if (day === 1 && cur.length) {
             weeks.push(cur);
-            cur = [d];
+            cur = [info];
           } else {
-            cur.push(d);
+            cur.push(info);
           }
         });
         if (cur.length) weeks.push(cur);
@@ -61,26 +78,23 @@
         // 统计每个员工的工作周数
         const results = [];
         json.slice(1).forEach(row => {
-          const emp = row[headers.indexOf('Position ID')];
-          if (!emp || emp === 'Grand Total') return;
+          const emp = row[posIdx];
+          if (emp == null || emp === "Grand Total") return;
           let count = 0;
-          weeks.forEach(w => {
-            if (
-              w.some(d => {
-                const idx = headers.findIndex(
-                  h => new Date(h).toDateString() === d.toDateString()
-                );
-                return row[idx] === 1;
-              })
-            ) {
+          weeks.forEach(week => {
+            // 只要本周任意一天有值（非空），就算有工作
+            if (week.some(info => row[info.i] != null && row[info.i] !== "")) {
               count++;
             }
           });
           results.push([emp, count]);
         });
 
-        // 生成并下载结果 Excel
-        const newWs = XLSX.utils.aoa_to_sheet([['员工ID', '工作周数'], ...results]);
+        // 构建并下载结果 Excel，第二列标题为日期范围
+        const newWs = XLSX.utils.aoa_to_sheet([
+          ['员工ID', rangeLabel],
+          ...results
+        ]);
         const newWb = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(newWb, newWs, '员工周工作统计');
         const wbout = XLSX.write(newWb, { bookType: 'xlsx', type: 'array' });
