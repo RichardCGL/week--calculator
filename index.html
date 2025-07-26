@@ -2,107 +2,97 @@
 <html lang="zh">
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>员工周工作统计工具</title>
-  <link rel="stylesheet" href="https://pyscript.net/releases/2024.1.1/core.css" />
-  <script type="module" src="https://pyscript.net/releases/2024.1.1/core.js"></script>
 </head>
 <body>
   <h1>员工周工作统计工具</h1>
-
-  <!-- 声明依赖包 -->
-  <py-env>
-    - pandas
-    - openpyxl
-  </py-env>
 
   <!-- 文件上传和操作按钮 -->
   <input type="file" id="file-input" accept=".xlsx" />
   <button id="process-btn">处理并生成报告</button>
   <a id="download-link" style="display:none; margin-left:10px;">下载结果</a>
 
-  <!-- PyScript 逻辑 -->
-  <py-script>
-from js import document, FileReader, Blob, URL
-from pyodide.ffi import to_js
-import pandas as pd
-from io import BytesIO
+  <!-- 引入 SheetJS 和 FileSaver.js -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/file-saver@2.0.5/dist/FileSaver.min.js"></script>
 
-# 处理文件并生成下载链接
+  <script>
+    document.getElementById("process-btn").addEventListener("click", async () => {
+      const fileInput = document.getElementById("file-input");
+      const file = fileInput.files[0];
+      if (!file) {
+        alert("请先选择 Excel 文件");
+        return;
+      }
+      try {
+        const data = await file.arrayBuffer();
+        const workbook = XLSX.read(data, { type: "array" });
+        const sheet = workbook.Sheets["Copy of Pivot"];
+        if (!sheet) {
+          alert("未找到名为 'Copy of Pivot' 的工作表");
+          return;
+        }
+        const json = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+        if (json.length === 0) {
+          alert("工作表为空");
+          return;
+        }
+        const headers = json[0];
+        const dateCols = headers.filter(h => h !== 'Position ID' && h !== 'Grand Total');
+        const dates = dateCols
+          .map(h => new Date(h))
+          .filter(d => !isNaN(d));
 
-def process_file(evt):
-    input_el = document.getElementById("file-input")
-    file = input_el.files.item(0)
-    if not file:
-        return
-    reader = FileReader.new()
+        // 按周分组（周一到周六为一周，跳过周日）
+        const weeks = [];
+        let cur = [];
+        dates.sort((a, b) => a - b).forEach(d => {
+          if (d.getDay() === 0) return;
+          if (d.getDay() === 1 && cur.length) {
+            weeks.push(cur);
+            cur = [d];
+          } else {
+            cur.push(d);
+          }
+        });
+        if (cur.length) weeks.push(cur);
 
-    def onload(e):
-        data = e.target.result
-        df = pd.read_excel(data, sheet_name='Copy of Pivot')
-        # 筛选日期列
-        date_cols = [col for col in df.columns if col not in ['Position ID', 'Grand Total']]
-        dates = []
-        for col in date_cols:
-            try:
-                dates.append(pd.to_datetime(col))
-            except:
-                pass
+        // 统计每个员工的工作周数
+        const results = [];
+        json.slice(1).forEach(row => {
+          const emp = row[headers.indexOf('Position ID')];
+          if (!emp || emp === 'Grand Total') return;
+          let count = 0;
+          weeks.forEach(w => {
+            if (
+              w.some(d => {
+                const idx = headers.findIndex(
+                  h => new Date(h).toDateString() === d.toDateString()
+                );
+                return row[idx] === 1;
+              })
+            ) {
+              count++;
+            }
+          });
+          results.push([emp, count]);
+        });
 
-        # 按周分组（周一到周六为一周，跳过周日）
-        def group_weeks(dates):
-            weeks = []
-            cur = []
-            for d in sorted(dates):
-                if d.weekday() == 6:
-                    continue
-                if d.weekday() == 0 and cur:
-                    weeks.append(cur)
-                    cur = [d]
-                else:
-                    cur.append(d)
-            if cur:
-                weeks.append(cur)
-            return weeks
-
-        weeks = group_weeks(dates)
-
-        # 统计每个员工的工作周数
-        results = []
-        for _, row in df.iterrows():
-            emp = row['Position ID']
-            if pd.isna(emp) or emp == 'Grand Total':
-                continue
-            count = 0
-            for w in weeks:
-                if any(
-                    (pd.to_datetime(col).date() == d.date() and row[col] == 1)
-                    for d in w for col in date_cols
-                ):
-                    count += 1
-            results.append({'员工ID': emp, '工作周数': count})
-
-        # 将结果写入 Excel 并生成 Blob
-        out = pd.DataFrame(results)
-        buf = BytesIO()
-        with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-            out.to_excel(writer, index=False, sheet_name='员工周工作统计')
-        data_out = buf.getvalue()
-        blob = Blob.new([to_js(data_out)], {
-            'type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        })
-        url = URL.createObjectURL(blob)
-        link = document.getElementById("download-link")
-        link.href = url
-        link.download = '员工周工作统计结果.xlsx'
-        link.style.display = 'inline-block'
-
-    reader.onload = onload
-    reader.readAsArrayBuffer(file)
-
-# 绑定按钮事件
-btn = document.getElementById("process-btn")
-btn.addEventListener("click", process_file)
-  </py-script>
-
+        // 生成并下载结果 Excel
+        const newWs = XLSX.utils.aoa_to_sheet([['员工ID', '工作周数'], ...results]);
+        const newWb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(newWb, newWs, '员工周工作统计');
+        const wbout = XLSX.write(newWb, { bookType: 'xlsx', type: 'array' });
+        saveAs(
+          new Blob([wbout], { type: 'application/octet-stream' }),
+          '员工周工作统计结果.xlsx'
+        );
+      } catch (err) {
+        console.error(err);
+        alert('处理时发生错误，请检查文件格式');
+      }
+    });
+  </script>
 </body>
 </html>
